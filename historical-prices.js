@@ -4,7 +4,7 @@
  */
 (function(root){
   'use strict';
-  const KEY='mm-stage1c-daily-prices', ATTEMPT='mm-stage1c-last-attempt', DAY=86400000;
+  const KEY='mm-stage1c-daily-prices', ATTEMPT='mm-stage1c-last-attempt', COOLDOWN='mm-stage1c-retry-after', DAY=86400000;
   const IDS=Object.freeze(['morpho','sky','syrup','mamo','venice-token']);
   const BASE='https://api.coingecko.com/api/v3/';
   const obj=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -43,10 +43,10 @@
     const today=midnight(now), floor=Math.ceil((now-364*DAY)/DAY)*DAY;
     // Provider says completed day's observation may not be ready until 00:35 UTC next day.
     const end=today-DAY-(now-today<35*60000?DAY:0);
-    let missing=end;
-    for(let t=floor;t<=end;t+=DAY)if(!days[iso(t)]){missing=t;break;}
+    let missing=end, gaps=0;
+    for(let t=floor;t<=end;t+=DAY)if(!days[iso(t)]){if(!gaps)missing=t;gaps++;}
     const start=Math.max(floor,Math.min(missing,end-92*DAY));
-    return {from:start,to:now,end,floor};
+    return {from:start,to:now,end,floor,gaps};
   }
   function extract(id,payload,range,retrievedAt){
     if(!IDS.includes(id)||!obj(payload)||!Array.isArray(payload.prices)||!payload.prices.length)throw Error('Missing historical prices');
@@ -68,7 +68,9 @@
     return {total:assets.reduce((s,a)=>s+a.count,0),assets};
   }
   function coverage(storage){try{return summary(read(storage));}catch(_){return {total:0,assets:[],invalid:true};}}
+  function cooldownUntil(storage){try{const n=Number(storage.getItem(COOLDOWN)||0);return Number.isFinite(n)&&n>0?n:0;}catch(_){return 0;}}
   function due(storage,now=Date.now()){
+    if(cooldownUntil(storage)>now)return false;
     try{const last=Number(storage.getItem(ATTEMPT)||0);return !last||now<last||now-last>=6*3600000;}catch(_){return true;}
   }
   function legacyMonthly(data,previous,now){
@@ -90,46 +92,75 @@
     }return next;
   }
   let busy=false;
-  async function refresh({storage,fetcher,key,now=Date.now(),shouldStop=()=>false,onSpot=()=>{},writeBatch}){
-    if(busy)return {busy:true};busy=true;
-    const failures=[],successes=[];let spotOk=false,spotError='',monthly=null,stop=false;
-    const get=async url=>{
-      const controller=typeof AbortController==='function'?new AbortController():null;
-      const timer=controller?setTimeout(()=>controller.abort(),25000):null;
-      try{const response=await fetcher(url,{headers:key?{'x-cg-demo-api-key':key}:{},...(controller?{signal:controller.signal}:{})});if(!response.ok){const e=Error('HTTP '+response.status);e.status=response.status;throw e;}return await response.json();}finally{if(timer!==null)clearTimeout(timer);}
-    };
+  // Every request is sequential. A browser network/CORS failure can mask an HTTP 429,
+  // so don't fan out after it persists. Retry transient failures once, never retry 401/403/429.
+  async function refresh({storage,fetcher,key,now=Date.now(),clock=Date.now,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),shouldStop=()=>false,onSpot=()=>{},writeBatch}){
+    if(busy)return {busy:true};
+    const until=cooldownUntil(storage);
+    if(until>clock())return {deferred:true,retryAfter:until,coverage:coverage(storage)};
+    busy=true;
+    const failures=[],successes=[],skipped=[];let spotOk=false,spotError='',monthly=null,stop=false,lastRequest=null;
+    let retryAfter=0;
+    function defer(ms){retryAfter=Math.max(retryAfter,clock()+ms);try{storage.setItem(COOLDOWN,String(retryAfter));}catch(_){};}
     const blocked=e=>[401,403,429].includes(e.status);
+    const opaque=e=>e.network===true||e.name==='AbortError';
+    const transient=e=>opaque(e)||e.status===408||e.status>=500;
+    const reason=e=>e.name==='AbortError'?'Request timed out':e.network?'Network or browser access error (HTTP status unavailable)':e.status?'HTTP '+e.status:e.message;
+    const cancelled=()=>{const e=Error('Cancelled');e.cancelled=true;return e;};
+    async function get(url){
+      if(lastRequest!==null){const wait=2500-(clock()-lastRequest);if(wait>0)await pause(wait);}
+      if(shouldStop())throw cancelled();
+      lastRequest=clock();
+      const controller=typeof AbortController==='function'?new AbortController():null;
+      const timer=controller?setTimeout(()=>controller.abort(),40000):null;
+      try{
+        let response;
+        try{response=await fetcher(url,{headers:key?{'x-cg-demo-api-key':key}:{},...(controller?{signal:controller.signal}:{})});}catch(err){const e=Error('Network or browser access error');e.network=true;e.name=err?.name==='AbortError'?'AbortError':'NetworkError';throw e;}
+        if(!response.ok){const e=Error('HTTP '+response.status);e.status=response.status;if(e.status===429){const raw=response.headers?.get?.('Retry-After');const seconds=Number(raw);const ms=raw&&Number.isFinite(seconds)?seconds*1000:raw?Date.parse(raw)-clock():0;defer(Math.max(60000,Number.isFinite(ms)?ms:0));}throw e;}
+        return await response.json();
+      }finally{if(timer!==null)clearTimeout(timer);}
+    }
+    async function getWithRetry(url,alternative){
+      try{return await get(url);}catch(e){if(!transient(e)||blocked(e)||shouldStop())throw e;await pause(8000);if(shouldStop())throw cancelled();return await get(alternative||url);}
+    }
+    function halt(e){if(opaque(e)&&!e.cancelled)defer(60000);return blocked(e)||opaque(e);}
     try{
       try{storage.setItem(ATTEMPT,String(now));}catch(_){}
       try{
-        const raw=await get(BASE+'simple/price?ids='+IDS.join(',')+'&vs_currencies=usd');const values={};
+        const raw=await getWithRetry(BASE+'simple/price?ids='+IDS.join(',')+'&vs_currencies=usd');const values={};
         for(const id of IDS){if(!positive(raw?.[id]?.usd))throw Error('Invalid spot price');values[id]=raw[id].usd;}
         if(shouldStop())return {cancelled:true};
-        const ts=new Date().toISOString();writeBatch(storage,[['cg-spot',JSON.stringify(values)],['cg-ts',ts]]);onSpot(values,ts);spotOk=true;
-      }catch(e){spotError=e.name==='AbortError'?'Request timed out':e.message;stop=blocked(e);}
+        const ts=new Date(clock()).toISOString();writeBatch(storage,[['cg-spot',JSON.stringify(values)],['cg-ts',ts]]);onSpot(values,ts);spotOk=true;
+      }catch(e){if(e.cancelled)return {cancelled:true};spotError=reason(e);stop=halt(e);}
       if(shouldStop())return {cancelled:true};
-      // Validate existing data before starting; corruption is NOT reset or overwritten.
-      try{read(storage);}catch(_){return {spotOk,spotError,failures:[{id:'library',reason:'Saved daily price library is invalid; export recovery backup before repair.'}],successes};}
-      for(const id of IDS){
+      let initial;
+      try{initial=read(storage);}catch(_){return {spotOk,spotError,failures:[{id:'library',reason:'Saved daily price library is invalid; export recovery backup before repair.'}],successes,skipped,retryAfter};}
+      // Complete assets cost zero history requests. Prioritize largest gap; Venice wins ties.
+      const jobs=IDS.map(id=>({id,range:rangeFor(initial.observations[id]||{},now)})).sort((a,b)=>b.range.gaps-a.range.gaps||Number(b.id==='venice-token')-Number(a.id==='venice-token'));
+      for(const {id,range} of jobs){
         if(shouldStop())return {cancelled:true};
-        if(stop){failures.push({id,reason:'Skipped after authentication or rate-limit error'});continue;}
+        if(!range.gaps){skipped.push({id,reason:'Daily history already up to date'});continue;}
+        if(stop){failures.push({id,reason:'Deferred after connection or API error'});continue;}
         try{
-          const range=rangeFor(read(storage).observations[id]||{},now);
-          const payload=await get(BASE+'coins/'+id+'/market_chart/range?vs_currency=usd&from='+Math.floor(range.from/1000)+'&to='+Math.floor(range.to/1000));
-          const acquired=extract(id,payload,range,Math.max(now,Date.now()));
+          const url=BASE+'coins/'+id+'/market_chart/range?vs_currency=usd&from='+Math.floor(range.from/1000)+'&to='+Math.floor(range.to/1000);
+          // Official equivalent endpoint for a full-window retry, still validated against
+          // UTC midnight + requested bounds. No API key in URLs or external proxy.
+          const alternate=range.from===range.floor?BASE+'coins/'+id+'/market_chart?vs_currency=usd&days=364':url;
+          const payload=await getWithRetry(url,alternate);
+          const acquired=extract(id,payload,range,Math.max(now,clock()));
           if(shouldStop())return {cancelled:true};
-          // Re-read immediately before writing. Merge per token, not by replacing the entire response.
           const merged=merge(read(storage),acquired.data);storage.setItem(KEY,JSON.stringify(merged));
           const days=merged.observations[id]||{}; let gaps=0;
           for(let t=range.floor;t<=range.end;t+=DAY)if(!days[iso(t)])gaps++;
           successes.push({id,count:Object.keys(acquired.data.observations[id]).length,gaps,rejected:acquired.rejected});
-        }catch(e){failures.push({id,reason:e.name==='AbortError'?'Request timed out':e.message});stop=blocked(e);}
+        }catch(e){if(e.cancelled)return {cancelled:true};failures.push({id,reason:reason(e)});stop=halt(e);}
       }
       if(shouldStop())return {cancelled:true};
-      if(successes.length){try{const previous=JSON.parse(storage.getItem('cg-hist')||'{}');if(!obj(previous)||!Object.values(previous).every(positive))throw Error('Existing monthly cache is invalid');monthly=legacyMonthly(read(storage),previous,now);storage.setItem('cg-hist',JSON.stringify(monthly));}catch(e){monthly=null;failures.push({id:'monthly',reason:e.message});}}
-      return {spotOk,spotError,successes,failures,monthly,coverage:coverage(storage)};
+      // Also recompute from an already complete library (e.g. after restoring a cache).
+      if(successes.length||skipped.length){try{const previous=JSON.parse(storage.getItem('cg-hist')||'{}');if(!obj(previous)||!Object.values(previous).every(positive))throw Error('Existing monthly cache is invalid');monthly=legacyMonthly(read(storage),previous,now);if(JSON.stringify(monthly)!==JSON.stringify(previous))storage.setItem('cg-hist',JSON.stringify(monthly));}catch(e){monthly=null;failures.push({id:'monthly',reason:e.message});}}
+      return {spotOk,spotError,successes,failures,skipped,retryAfter,coverage:coverage(storage),monthly};
     }finally{busy=false;}
   }
-  const api={KEY,IDS,DAY,empty,validate,parse,read,merge,mergeRaw,rangeFor,extract,lookup,summary,coverage,due,legacyMonthly,refresh,isBusy:()=>busy};
+  const api={KEY,IDS,DAY,empty,validate,parse,read,merge,mergeRaw,rangeFor,extract,lookup,summary,coverage,due,cooldownUntil,legacyMonthly,refresh,isBusy:()=>busy};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.MoneyBuddyPrices=api;
 })(typeof window==='undefined'?globalThis:window);
