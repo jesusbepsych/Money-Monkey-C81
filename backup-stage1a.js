@@ -68,7 +68,7 @@
     // Deliberately allow export of raw legacy values even if a prior app wrote invalid data.
     // Restore validates active settings; the original preserved archive is inert evidence.
     return JSON.stringify({...core, exportDate:new Date().toISOString(),
-      moneyBuddyBackup:{version:VERSION, stage:'1A', auxiliary}});
+      moneyBuddyBackup:{version:VERSION, stage:'1B', auxiliary}});
   }
   function validateCore(k,v) {
     if (ARRAYS.includes(k)) {
@@ -77,6 +77,8 @@
       if (['quickAssets','quickSources','quickJobs','unlockedAchievements'].includes(k) && !v.every(plainText)) fail('Invalid text entry in ' + k);
     } else if (OBJECTS.includes(k) && !object(v)) fail('Expected an object for ' + k);
     if (k === 'investments') for (const r of v) {
+      const dates = root.MoneyBuddyDates || (typeof module === 'object' && module.exports ? require('./transaction-dates.js') : null);
+      if (!dates || !dates.validate(r)) fail('Invalid investment transaction-date metadata.');
       if (!validDate(r.date) || typeof r.asset !== 'string' || !finite(r.amount) || !['buy','sell'].includes(r.type) || !Number.isInteger(r.month) || r.month < 0 || r.month > 11 || !Number.isInteger(r.year) || (r.quantity != null && !finite(r.quantity))) fail('Invalid investment record; check dates, amounts and quantities.');
     }
     if (k === 'expenses' || k === 'oneTimeIncomes') for (const r of v) {
