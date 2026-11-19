@@ -11,7 +11,7 @@
   const PRICE_KEYS = ['cg-spot', 'cg-hist', 'cg-ts'];
   const SETTINGS = {
     'cg-spot': 'prices', 'cg-hist': 'prices', 'cg-ts': 'timestamp',
-    'nw-anchor': 'number', 'financial-darkmode': 'boolean',
+    'nw-anchor': 'number', 'mm-stage3-cash-anchor': 'dated-anchor', 'financial-darkmode': 'boolean',
     'def-exp-card': 'text', 'def-inc-card': 'text',
     'cat-limits': 'object', 'cat-limit-ov': 'object',
     'task-group-1': 'text', 'task-group-2': 'text', 'task-group-3': 'text',
@@ -46,6 +46,7 @@
     if (kind === 'number') { if (!raw.trim() || !Number.isFinite(Number(raw))) fail('Invalid saved cash anchor'); return; }
     let v; try { v = JSON.parse(raw); } catch (_) { fail('Invalid JSON in saved setting: ' + key); }
     safeTree(v);
+    if (kind === 'dated-anchor') { const dates=root.MoneyBuddyDates||(typeof module==='object'&&module.exports?require('./transaction-dates.js'):null); if(!object(v)||v.version!==1||!dates||!dates.validDay(v.day)||!finite(v.amount)||Math.abs(v.amount)>Number.MAX_SAFE_INTEGER/100||Object.keys(v).some(k=>!['version','day','amount'].includes(k))) fail('Invalid dated cash anchor'); }
     if (kind === 'prices' && !priceMap(v)) fail('Invalid saved price map: ' + key);
     if (kind === 'boolean' && typeof v !== 'boolean') fail('Invalid saved theme');
     if (kind === 'object' && !object(v)) fail('Invalid saved setting: ' + key);
@@ -71,7 +72,7 @@
     // Deliberately allow export of raw legacy values even if a prior app wrote invalid data.
     // Restore validates active settings; the original preserved archive is inert evidence.
     return JSON.stringify({...core, exportDate:new Date().toISOString(),
-      moneyBuddyBackup:{version:VERSION, stage:'2', auxiliary}});
+      moneyBuddyBackup:{version:VERSION, stage:'3', auxiliary}});
   }
   function validateCore(k,v) {
     if (ARRAYS.includes(k)) {
@@ -142,7 +143,7 @@
         // remain independent copies; active monthly maps are merged separately.
         if (k === ARCHIVE && storage.getItem(k)!==null) continue;
         // Missing anchor evidence must not silently erase an existing anchor.
-        if (k === 'nw-anchor' && raw===null) continue;
+        if ((k === 'nw-anchor'||k==='mm-stage3-cash-anchor') && raw===null) continue;
         if (k === 'cg-hist') {
           if(raw===null)continue;
           const existing=storage.getItem(k);
