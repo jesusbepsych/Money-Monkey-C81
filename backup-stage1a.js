@@ -7,6 +7,8 @@
   const VERSION = 1;
   const DAILY = 'mm-stage1c-daily-prices';
   const prices = root.MoneyBuddyPrices || (typeof module === 'object' && module.exports ? require('./historical-prices.js') : null);
+  const recon=()=>root.MoneyBuddyReconciliation||(typeof module==='object'&&module.exports?require('./reconciliation.js'):null);
+  const RECON='mm-stage5-reconciliation';
   const ARCHIVE = 'mm-stage1a-legacy-price-cache';
   const PRICE_KEYS = ['cg-spot', 'cg-hist', 'cg-ts'];
   const SETTINGS = {
@@ -16,7 +18,7 @@
     'cat-limits': 'object', 'cat-limit-ov': 'object',
     'task-group-1': 'text', 'task-group-2': 'text', 'task-group-3': 'text',
     'hidden-income': 'array', 'hidden-holdings': 'array',
-    'financial-autorecur-log': 'object', [ARCHIVE]: 'archive', [DAILY]: 'daily'
+    'financial-autorecur-log': 'object', [ARCHIVE]: 'archive', [DAILY]: 'daily', [RECON]:'reconciliation'
   };
   const ARRAYS = ['investments','expenses','workLogs','todos','oneTimeIncomes','annualIncomeCategories','archivedTodos','recurringExpenses','unlockedAchievements','cards','quickAssets','quickSources','quickJobs','goals','archivedGoals','loans'];
   const OBJECTS = ['categoryNotes','jobRates','currentValues','jobLastPaidDates','settings'];
@@ -41,6 +43,7 @@
     if (typeof raw !== 'string') fail('Invalid saved setting: ' + key);
     const kind = SETTINGS[key];
     if (kind === 'text') return;
+    if (kind === 'reconciliation') { recon().parse(raw); return; }
     if (kind === 'daily') { if (!prices) fail('Daily pricing module unavailable'); prices.parse(raw); return; }
     if (kind === 'timestamp') { if (raw !== '' && !validDate(raw)) fail('Invalid saved price timestamp'); return; }
     if (kind === 'number') { if (!raw.trim() || !Number.isFinite(Number(raw))) fail('Invalid saved cash anchor'); return; }
@@ -72,7 +75,7 @@
     // Deliberately allow export of raw legacy values even if a prior app wrote invalid data.
     // Restore validates active settings; the original preserved archive is inert evidence.
     return JSON.stringify({...core, exportDate:new Date().toISOString(),
-      moneyBuddyBackup:{version:VERSION, stage:'4', auxiliary}});
+      moneyBuddyBackup:{version:VERSION, stage:'5', auxiliary}});
   }
   function validateCore(k,v) {
     if (ARRAYS.includes(k)) {
@@ -152,6 +155,7 @@
           writes.push([k,JSON.stringify(merged)]);continue;
         }
         // Restoring an older backup must never erase independently acquired market history.
+        if (k === RECON) { if (raw !== null) writes.push([k,recon().mergeRaw(storage.getItem(k),raw)]); continue; }
         if (k === DAILY) { if (raw !== null) writes.push([k,prices.mergeRaw(storage.getItem(k),raw)]); continue; }
         writes.push([k,raw]);
       }
