@@ -71,7 +71,7 @@
     // Deliberately allow export of raw legacy values even if a prior app wrote invalid data.
     // Restore validates active settings; the original preserved archive is inert evidence.
     return JSON.stringify({...core, exportDate:new Date().toISOString(),
-      moneyBuddyBackup:{version:VERSION, stage:'1E', auxiliary}});
+      moneyBuddyBackup:{version:VERSION, stage:'2', auxiliary}});
   }
   function validateCore(k,v) {
     if (ARRAYS.includes(k)) {
