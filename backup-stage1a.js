@@ -71,7 +71,7 @@
     // Deliberately allow export of raw legacy values even if a prior app wrote invalid data.
     // Restore validates active settings; the original preserved archive is inert evidence.
     return JSON.stringify({...core, exportDate:new Date().toISOString(),
-      moneyBuddyBackup:{version:VERSION, stage:'1D', auxiliary}});
+      moneyBuddyBackup:{version:VERSION, stage:'1E', auxiliary}});
   }
   function validateCore(k,v) {
     if (ARRAYS.includes(k)) {
@@ -121,11 +121,35 @@
     if (enhanced) {
       const meta = input.moneyBuddyBackup;
       if (!object(meta) || meta.version !== VERSION || !object(meta.auxiliary)) fail('Unsupported enhanced backup version. No changes made.');
-      for (const k of Object.keys(SETTINGS)) if (own(meta.auxiliary,k)) {
-        const raw = meta.auxiliary[k];
-        validateAux(k,raw);
-        // A backup with no archive must not destroy locally preserved evidence.
-        if (k === ARCHIVE && raw === null && storage.getItem(k) !== null) continue;
+      const aux = meta.auxiliary;
+      // Validate every supplied recognized value before planning any write.
+      for (const k of Object.keys(SETTINGS)) if (own(aux,k)) validateAux(k,aux[k]);
+      // Spot map and timestamp are a single observation. An older backup is not
+      // a reason to roll back live prices or associate them with another timestamp.
+      const localSpot=storage.getItem('cg-spot'), localTs=storage.getItem('cg-ts');
+      const usableSpot=raw=>{try{const m=JSON.parse(raw);return priceMap(m)&&Object.keys(m).length>0;}catch(_){return false;}};
+      const time=raw=>validDate(raw)?Date.parse(raw):-Infinity;
+      if (own(aux,'cg-spot')&&usableSpot(aux['cg-spot'])) {
+        const incomingTs=own(aux,'cg-ts')?aux['cg-ts']:null;
+        if(!usableSpot(localSpot)||time(incomingTs)>time(localTs)) {
+          writes.push(['cg-spot',aux['cg-spot']],['cg-ts',incomingTs]);
+        }
+      }
+      for (const k of Object.keys(SETTINGS)) if (own(aux,k)) {
+        const raw = aux[k];
+        if(k==='cg-spot'||k==='cg-ts')continue;
+        // Preserve original local archival evidence. Imported backups themselves
+        // remain independent copies; active monthly maps are merged separately.
+        if (k === ARCHIVE && storage.getItem(k)!==null) continue;
+        // Missing anchor evidence must not silently erase an existing anchor.
+        if (k === 'nw-anchor' && raw===null) continue;
+        if (k === 'cg-hist') {
+          if(raw===null)continue;
+          const existing=storage.getItem(k);
+          if(existing!==null)validateAux(k,existing);
+          const merged={...JSON.parse(raw),...JSON.parse(existing||'{}')};
+          writes.push([k,JSON.stringify(merged)]);continue;
+        }
         // Restoring an older backup must never erase independently acquired market history.
         if (k === DAILY) { if (raw !== null) writes.push([k,prices.mergeRaw(storage.getItem(k),raw)]); continue; }
         writes.push([k,raw]);

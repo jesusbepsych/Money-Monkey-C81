@@ -29,14 +29,14 @@
       });
     }
     for(const e of eventIndex.values())if(e.length>1)for(const row of e)issue('duplicate-ledger-id',row.eventId);
-    const invRows=list(core.investments),batches=Dates.batchDays(invRows.filter(r=>r&&typeof r==='object'));
+    const invRows=list(core.investments),batches=Dates.batchDays(invRows.filter(r=>r&&typeof r==='object'&&Object.prototype.hasOwnProperty.call(ASSETS,keyOf(r.asset))));
     const investmentIds=new Map();
     invRows.forEach((r,i)=>{
       r=r||{};const ref='investments:'+i,asset=keyOf(r.asset),d=Dates.evidence(r,batches),included=Object.prototype.hasOwnProperty.call(ASSETS,asset),excluded=EXCLUDED.has(asset),e={eventId:ref,recordId:validId(r.id)?r.id:null,asset:r.asset??null,coinGeckoId:included?ASSETS[asset]:null,kind:r.type==='buy'?'investment-buy':r.type==='sell'?'investment-sell':'unknown',amount:money(r.amount)?r.amount:null,quantity:money(r.quantity)?r.quantity:null,dateEvidence:d,bankCashDelta:null,scope:included?'included':excluded?'excluded-by-user':'unmapped'};
       e.quantityDelta=e.quantity!==null&&e.kind!=='unknown'?(e.kind==='investment-buy'?e.quantity:-e.quantity):null;
       e.executionPrice=e.quantity!==null&&e.amount!==null?e.amount/e.quantity:null;
       if(!validId(r.id))issue('missing-investment-id',ref);else track(investmentIds,id(r.id),e);
-      if(included){if(e.quantityDelta===null||e.amount===null)issue('invalid-investment',ref);if(d.kind==='unavailable')issue('invalid-investment-date',ref);investments.push(e);}else{ignoredInvestments.push(e);if(!excluded)issue('unmapped-investment',ref);}
+      if(included){if(e.quantityDelta===null||e.amount===null)issue('invalid-investment',ref);if(d.kind==='unavailable'||!Dates.validate(r))issue('invalid-investment-date',ref);investments.push(e);}else{ignoredInvestments.push(e);if(!excluded)issue('unmapped-investment',ref);}
     });
     for(const rows of investmentIds.values())if(rows.length>1)for(const row of rows)issue('duplicate-investment-id',row.eventId);
     list(core.cards).forEach((c,i)=>{
