@@ -43,7 +43,7 @@
       const signed=rows=>rows.reduce((s,m)=>s+cents(m.accountDelta),0);
       const computable=a.valid&&covered;
       const evidence=!observed&&a.recordId!==null&&a.type!=='unknown'&&!issueRefs.has(a.accountRef)?Recon.resolve(reconciliation,a,day,today):null;
-      const balance=evidence?cents(evidence.balance):observed&&a.base!==null&&a.type!=='unknown'&&!issueRefs.has(a.accountRef)?a.base:computable?a.base-signed(later):null;
+      const balance=evidence?(evidence.balance===null?null:cents(evidence.balance)):observed&&a.base!==null&&a.type!=='unknown'&&!issueRefs.has(a.accountRef)?a.base:computable?a.base-signed(later):null;
       const alternate=evidence?balance:observed?balance:computable?a.base-signed(altLater):null;
       const preCoverage=!!a.first&&day<a.first;
       return {accountRef:a.accountRef,name:a.name,type:a.type,first:a.first,firstActivity:a.firstActivity,quality:balance===null?'unavailable':observed?'recorded':evidence?evidence.kind:'reconstructed',evidence,balance:dollars(balance),effectiveAlternative:dollars(alternate),laterMovements:observed?0:later.length,cutoffDifferences:observed?0:a.movements.filter(m=>m.linkStatus==='verified'&&((m.postingDay>day)!==(m.effectiveDay>day))).length,preCoverage:preCoverage&&!evidence,invalid:!a.valid,negative:balance!==null&&balance<0};
