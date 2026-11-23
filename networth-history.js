@@ -114,6 +114,8 @@
   }
   function Chart({rows,selected,onSelect,darkMode,full,mode}){
     const h=root.React.createElement;
+    // Keep drag state outside React render updates; the selected date still lives in Panel.
+    const gesture=root.React.useRef(null);
     const width=680,height=full?342:276,L=74,R=18,T=18,B=66, bottom=height-B;
     const vals=rows.flatMap(r=>[r.total,r.minValue,r.maxValue].filter(finite));
     let lo=vals.length?Math.min(...vals):0,hi=vals.length?Math.max(...vals):1;
@@ -127,9 +129,11 @@
     const focused=isBiweekly?rows.find(r=>r.day===selected):null;
     const fillId='mm-networth-fill-'+(full?'full':'inline');
     let runs=[],run=[];for(const r of rows){if(finite(r.total))run.push(r);else{if(run.length)runs.push(run);run=[];}}if(run.length)runs.push(run);
-    // Monthly dates are the actual data points; show every calendar month, not every fourth label.
-    // Biweekly mode keeps selective ticks to avoid a dense, unreadable bottom axis.
-    const labels=mode==='monthly'?rows.map((_,i)=>i):[...new Set([0,Math.round((rows.length-1)/4),Math.round((rows.length-1)/2),Math.round((rows.length-1)*3/4),rows.length-1])];
+    // Monthly remains unchanged. Biweekly shows up to 9 evenly spaced timeline
+    // labels on iPad/desktop (vs the original 5). On phones CSS hides alternate
+    // intermediate labels, retaining a readable 5-tick axis without lost dates.
+    const labelCount=Math.min(rows.length,9);
+    const labels=mode==='monthly'?rows.map((_,i)=>i):labelCount===1?[0]:[...new Set(Array.from({length:labelCount},(_,i)=>Math.round(i*(rows.length-1)/(labelCount-1))))];
     // Biweekly focus is opt-in: the default appearance contains no repeated dot grid.
     // Keep the monthly SVG unchanged; its less-dense chart retains its old markers.
     const focusY=focused?(finite(focused.total)?y(focused.total):focused.range?y((focused.minValue+focused.maxValue)/2):bottom+8):null;
@@ -137,7 +141,51 @@
     const focusX=focused?Math.max(L+1,Math.min(width-R-focusW-1,x(focused)-focusW/2)):0;
     const focusTop=focused?Math.max(T+3,Math.min(bottom-43,focusY<T+56?focusY+15:focusY-52)):0;
     const focusStroke=focused&&(focused.quality==='estimated'||focused.quality==='estimated-current'||focused.quality==='range')?'#d9a449':'#22c99c';
-    return h('svg',{viewBox:`0 0 ${width} ${height}`,role:'img','aria-label':isBiweekly?'Biweekly net worth history. Tap near a date to reveal its actual recorded valuation; missing totals remain gaps.':'Net worth history. Gaps indicate unavailable totals. Select a chart point to inspect details in fullscreen.',style:{width:'100%',height:'auto',display:'block',touchAction:'pan-y'}},
+    // Pointer capture keeps selection active when the finger moves across SVG
+    // point regions or briefly outside the plot. Selection always snaps to a
+    // *real* biweekly observation, never an invented price between points.
+    const svgPosition=e=>{
+      const rect=e.currentTarget.getBoundingClientRect();
+      if(!rect.width||!rect.height)return null;
+      return {x:(e.clientX-rect.left)*width/rect.width,y:(e.clientY-rect.top)*height/rect.height};
+    };
+    const nearest=e=>{
+      const pos=svgPosition(e);if(!pos)return null;
+      return rows.reduce((best,r)=>!best||Math.abs(x(r)-pos.x)<Math.abs(x(best)-pos.x)?r:best,null);
+    };
+    const onDown=e=>{
+      if(!isBiweekly||e.isPrimary===false||e.pointerType==='mouse'&&e.button!==0)return;
+      const pos=svgPosition(e);
+      if(!pos||pos.x<L-14||pos.x>width-R+14||pos.y<T-10||pos.y>bottom+20)return;
+      const point=nearest(e);if(!point)return;
+      gesture.current={id:e.pointerId,startX:e.clientX,startY:e.clientY,previous:selected,lastDay:point.day,moved:false};
+      try{e.currentTarget.setPointerCapture(e.pointerId);}catch(_){/* Not supported in every SVG browser */}
+      onSelect(point.day); // immediate feedback as soon as the finger touches
+    };
+    const onMove=e=>{
+      const g=gesture.current;if(!isBiweekly||!g||g.id!==e.pointerId)return;
+      if(!g.moved&&Math.hypot(e.clientX-g.startX,e.clientY-g.startY)>4)g.moved=true;
+      if(!g.moved)return;
+      const point=nearest(e);
+      if(point&&point.day!==g.lastDay){g.lastDay=point.day;onSelect(point.day);}
+    };
+    const onUp=e=>{
+      const g=gesture.current;if(!isBiweekly||!g||g.id!==e.pointerId)return;
+      const point=nearest(e);
+      if(point){
+        if(!g.moved){onSelect(g.previous===point.day?null:point.day);}
+        else if(g.lastDay!==point.day){onSelect(point.day);}
+      }
+      gesture.current=null;
+      // Capturing the pointer at the SVG root redirects pointerup away from
+      // the individual hit rectangles. Explicitly blur a focused hit target,
+      // otherwise Safari/Chromium may paint a huge focus rectangle after drag.
+      const active=e.currentTarget.ownerDocument?.activeElement;
+      if(active&&e.currentTarget.contains(active)&&typeof active.blur==='function')active.blur();
+      try{if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);}catch(_){}
+    };
+    const onCancel=e=>{if(gesture.current?.id===e.pointerId)gesture.current=null;};
+    return h('svg',{viewBox:`0 0 ${width} ${height}`,role:'img','aria-label':isBiweekly?'Biweekly net worth history. Tap or drag across dates to reveal actual recorded valuations; missing totals remain gaps.':'Net worth history. Gaps indicate unavailable totals. Select a chart point to inspect details in fullscreen.',onPointerDown:onDown,onPointerMove:onMove,onPointerUp:onUp,onPointerCancel:onCancel,style:{width:'100%',height:'auto',display:'block',touchAction:'pan-y'}},
       ...Array.from({length:5},(_,i)=>{const v=lo+(hi-lo)*i/4;return h('g',{key:'g'+i},h('line',{x1:L,x2:width-R,y1:y(v),y2:y(v),stroke:grid,strokeDasharray:'3 4'}),h('text',{x:L-8,y:y(v)+4,textAnchor:'end',fontSize:12,fill:muted},Math.abs(v)>=1000?'$'+(v/1000).toFixed(1)+'k':usd(v).split('.')[0]));}),
       h('defs',null,h('linearGradient',{id:fillId,x1:'0',y1:'0',x2:'0',y2:'1'},h('stop',{offset:'0%',stopColor:isBiweekly?'#22c99c':'#10b981',stopOpacity:isBiweekly?(darkMode?.22:.15):(darkMode?.29:.2)}),isBiweekly&&h('stop',{offset:'60%',stopColor:'#22c99c',stopOpacity:darkMode?.045:.025}),h('stop',{offset:'100%',stopColor:'#10b981',stopOpacity:0}))),
       ...runs.filter(run=>run.length>1).map((run,i)=>h('path',{key:'fill'+i,d:smoothPath(run,x,y)+` L ${x(run.at(-1))} ${bottom} L ${x(run[0])} ${bottom} Z`,fill:'url(#'+fillId+')',stroke:'none',pointerEvents:'none'})),
@@ -150,8 +198,8 @@
             (r.day===selected?h('g',{pointerEvents:'none'},h('circle',{cx:x(r),cy:y(r.total),r:9.5,fill:'#22c99c',fillOpacity:.12}),h('circle',{cx:x(r),cy:y(r.total),r:5.7,fill:darkMode?'#242232':'#fff',stroke:'#22c99c',strokeWidth:2.6})):r.live?h('circle',{cx:x(r),cy:y(r.total),r:4,fill:'#22c99c',stroke:darkMode?'#242232':'#fff',strokeWidth:1.6,pointerEvents:'none'}):null):
             h('circle',{cx:x(r),cy:y(r.total),r:r.day===selected?6:r.live?5:3.5,fill:color(r)==='#f59e0b'?(darkMode?'#1E1B2E':'#fff'):color(r),stroke:color(r)==='#f59e0b'?'#f59e0b':(darkMode?'#1E1B2E':'#fff'),strokeWidth:color(r)==='#f59e0b'?2:1.5})
         ):!r.range?h('g',{stroke:muted,strokeWidth:r.day===selected?2.5:1.5,pointerEvents:'none'},h('line',{x1:x(r)-3,x2:x(r)+3,y1:bottom+8,y2:bottom+14}),h('line',{x1:x(r)+3,x2:x(r)-3,y1:bottom+8,y2:bottom+14})):null,
-        h('rect',{x:i===0?L-8:(x(rows[i-1])+x(r))/2,y:T,width:Math.max(1,(i===rows.length-1?width-R+8:(x(rows[i+1])+x(r))/2)-(i===0?L-8:(x(rows[i-1])+x(r))/2)),height:bottom-T+18,fill:'transparent',onPointerUp:isBiweekly?e=>{if(typeof e.currentTarget.blur==='function')e.currentTarget.blur();}:undefined,onClick:()=>onSelect(isBiweekly&&!full&&r.day===selected?null:r.day),onKeyDown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onSelect(isBiweekly&&!full&&r.day===selected?null:r.day);}},className:'mm-networth-hit',tabIndex:0,role:'button','aria-label':'Inspect net worth on '+dateLabel(r.day)+': '+formatter(r)+(r.quality==='estimated'?' (estimated)':''),style:{cursor:'pointer'}}))),
-      ...labels.map(i=>{const r=rows[i],d=new Date(r.stamp),monthly=mode==='monthly';const mon=d.toLocaleDateString('en-US',{timeZone:'UTC',month:'short'});const year=d.getUTCFullYear();return h('text',{key:'label'+i,x:x(r),y:height-23,fontSize:monthly?10.5:11,fill:muted,textAnchor:i===0?'start':i===rows.length-1?'end':'middle'},monthly?h('tspan',null,mon):r.live?'Now':d.toLocaleDateString('en-US',{timeZone:'UTC',month:'short',day:'numeric'}),monthly&&(i===0||r.live||i>0&&new Date(rows[i-1].stamp).getUTCFullYear()!==year)&&h('tspan',{x:x(r),dy:12,fontSize:9},r.live?'Now':String(year)));}),
+        h('rect',{x:i===0?L-8:(x(rows[i-1])+x(r))/2,y:T,width:Math.max(1,(i===rows.length-1?width-R+8:(x(rows[i+1])+x(r))/2)-(i===0?L-8:(x(rows[i-1])+x(r))/2)),height:bottom-T+18,fill:'transparent',onPointerUp:isBiweekly?e=>{if(typeof e.currentTarget.blur==='function')e.currentTarget.blur();}:undefined,onClick:isBiweekly?undefined:()=>onSelect(r.day),onKeyDown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onSelect(isBiweekly&&!full&&r.day===selected?null:r.day);}},className:'mm-networth-hit',tabIndex:0,role:'button','aria-label':'Inspect net worth on '+dateLabel(r.day)+': '+formatter(r)+(r.quality==='estimated'?' (estimated)':''),style:{cursor:'pointer'}}))),
+      ...labels.map((i,j)=>{const r=rows[i],d=new Date(r.stamp),monthly=mode==='monthly';const mon=d.toLocaleDateString('en-US',{timeZone:'UTC',month:'short'});const year=d.getUTCFullYear();return h('text',{key:'label'+i,className:!monthly&&labels.length>=7&&j%2===1?'mm-networth-biweekly-extra':undefined,x:x(r),y:height-23,fontSize:monthly?10.5:11,fill:muted,textAnchor:i===0?'start':i===rows.length-1?'end':'middle'},monthly?h('tspan',null,mon):r.live?'Now':d.toLocaleDateString('en-US',{timeZone:'UTC',month:'short',day:'numeric'}),monthly&&(i===0||r.live||i>0&&new Date(rows[i-1].stamp).getUTCFullYear()!==year)&&h('tspan',{x:x(r),dy:12,fontSize:9},r.live?'Now':String(year)));}),
       focused&&h('g',{key:'focus-readout',pointerEvents:'none'},
         h('rect',{x:focusX,y:focusTop,width:focusW,height:43,rx:9,fill:darkMode?'#2c2938':'#fff',stroke:focusStroke,strokeOpacity:.78,strokeWidth:1}),
         h('text',{x:focusX+10,y:focusTop+15,fontSize:10,fill:muted},dateLabel(focused.day)+(focused.quality==='estimated'||focused.quality==='estimated-current'||focused.quality==='range'?' · est.':'')),

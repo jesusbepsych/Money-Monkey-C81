@@ -15,6 +15,8 @@
     /* Tap selection stays clean; keyboard focus has an intentional outline. */
     .mm-networth-hit:focus { outline: none; }
     .mm-networth-hit:focus-visible { stroke: #bfa9df; stroke-width: 1.2px; stroke-dasharray: 4 4; }
+    /* On narrow phones keep every other expanded biweekly tick out of the way. */
+    @media (max-width: 600px) { svg text.mm-networth-biweekly-extra { display: none !important; } }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { margin: 0; padding: 0; height: 100%;  overflow: hidden; background: #1E1B2E; color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
     #root { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #1E1B2E; }
@@ -65,7 +67,7 @@
   <script src="investment-history.js?v=2"></script>
   <script src="reconciliation.js?v=stage6-2a"></script>
   <script src="cash-debt-history.js?v=stage6-1"></script>
-  <script src="networth-history.js?v=ui-6-7"></script>
+  <script src="networth-history.js?v=ui-6-8"></script>
   <script src="recurring-schedule.js?v=ui-6-5"></script>
   <script src="app.js?v=ui-6-6"></script>
 </body>
